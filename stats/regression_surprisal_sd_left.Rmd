@@ -1,0 +1,724 @@
+---
+title: "sd_left"
+output: html_document
+date: "2022-09-16"
+---
+
+```{r packages}
+library("sjmisc")
+library("sjPlot")
+library("sjlabelled")
+library("tidyverse")
+library("dplyr")
+library("gmodels")
+library("lme4")
+#library("plyr")
+library("doBy")
+rm(list=ls())
+```
+
+## load data
+
+```{r load data}
+data <- read.csv("test_constituent_no_dis_spk_n4671_win1.csv")
+
+```
+
+
+```{r transformation of categorical factors, include=FALSE}
+# Transforming into factors several variables
+#social factors
+data$speaker_name <- as.factor(data$speaker_name)
+
+#polarity
+data$polarity <- as.factor(data$polarity)
+data$polarity_item <- as.factor(data$polarity_item)
+data$polarity_position <- as.factor(data$polarity_position)
+
+#verb
+data$v_lemma <- as.factor(data$v_lemma)
+data$v_type <- as.factor(data$v_type)
+
+#subject
+data$s1_type <- as.factor(data$s1_type)
+data$s1_lemma <- as.factor(data$s1_lemma)
+data$s1_animacy <- as.factor(data$s1_animacy)
+data$s1_np <- as.factor(data$s1_np)
+
+#clause type
+data$clause <- as.factor(data$clause)
+
+#adjacency
+data$adjacency <- as.factor(data$adjacency)
+
+data$sd <- as.factor(data$sd)
+data$position <- as.factor(data$position)
+
+```
+
+## data exclusions
+
+```{r drop blank values}
+data2 <- droplevels(subset(data, polarity !="ne que" & s1_freq!="" & dist_v2s!='' 
+                           & s1_len!='' & s1_lemma != 'anonyme' & s1_lemma != ''
+                           & !str_detect(s1_type, "coordination")
+                           & s1_log_proba_gpt_sum_win1!=""))
+
+
+# only keep sd and no_sd cases
+data2 <- droplevels(subset(data2, sd %in% c("no_sd", "no_sd(topic)", "sd", "sd(topic)", "sd,od"))) #5352
+
+# only keep left sd
+data2 <- droplevels(subset(data2, position %in% c("left","na"))) #3727
+```
+
+
+```{r dependant variables: dependent variable composed of 1 and 0}
+data2 <- data2 %>% mutate(sd2 = ifelse(str_detect(sd, "no_sd"), 0, 1))
+mean(data2$sd2)
+```
+
+## factors renaming, grouping scaling
+
+```{r independant factors renaming, grouping and scaling}
+stat <- data2
+
+stat <- stat %>% mutate(polarity2 = as.factor(case_when(polarity=="affirmative"~"aff.",
+                                          polarity=="raising"~"aff.", 
+                                          polarity=="negative ne retention"~"neg. ne retention", 
+                                          TRUE~"neg. ne omission")))
+
+#stat %>% count(polarity2)
+
+stat <- stat %>% mutate(polarity_item2 = as.factor(ifelse(polarity_item=="pas", "pas",
+                                     ifelse(polarity_item=="na", "affirmative",
+                                            "other_negative_words"))))
+#stat%>%count(polarity_item2)
+  
+stat <- stat %>% mutate(s1_type2 = as.factor(case_when(
+  str_detect(s1_type, "(definite)|(possessive)|(demonstrative)|(celui)|(PROPN)|(expression)")~"definite",
+  str_detect(s1_type, "(indefinite)|(number)|(certain)")~"indefinite",
+  stat$s1_type %in% c("personne","rien")~"neg. quant.",
+  str_detect(s1_type, "(beaucoup)|(majorite)|(tellement)|(trop)|(combien)|(plupart)|(plein)|(moitie)")~"degree quant.",
+  str_detect(s1_type, "(tout)|(chacun)|(chaque)")~"universal",
+  stat$s1_type %in% c("quelqu'un,relative","quelque","quelqu'un")~"free choice", 
+  TRUE~"else")))
+#stat%>%count(s1_type2)
+
+#t <- droplevels(subset(stat, s1_type2=="else"))
+stat <- droplevels(subset(stat, s1_type2!="else"))
+
+stat <- stat %>% mutate(s1_type3 = as.factor(case_when(
+  s1_type2 %in% c("indefinite","degree quant.","free choice")~"indefinite",
+  s1_type2=="definite"~"definite", 
+  s1_type2 %in% c("neg. quant.", "universal")~"universal",
+  TRUE~"else")))
+
+#count(stat$s1_type3)
+
+stat <- stat %>% mutate(s1_type4 = as.factor(case_when(
+  s1_type2 %in% c("indefinite")~"indefinite",
+  s1_type2=="definite"~"definite", 
+  s1_type2 %in% c("neg. quant.", "universal")~"universal",
+  s1_type2 %in% c("degree quant.","free choice")~"quantified",
+  TRUE~"else")))
+
+stat <- stat %>% mutate(s1_animacy2 = as.factor(case_when(s1_animacy %in% c("animal", "human")~"animate",
+       s1_animacy == "inanimate"~"inanimate",
+    TRUE~"else")))
+#stat %>% count(s1_animacy2)
+
+stat <- stat %>% mutate(clause2 = as.factor(case_when(
+  str_detect(clause, "(main)|(interrogative)")~"main", 
+  clause == "relative"~"relative", 
+  TRUE~"other subordinate")))
+
+#count(stat$clause2)
+
+#intervention clitics
+stat<- stat %>% mutate(intervention2 = as.factor(case_when(
+  intervening_clitics==""~"no_clitics",
+  TRUE~"clitics",
+)))
+
+#log transform verb frequency
+stat$freq_log <- log(stat$v_freq)
+# s1_freq
+stat$s1_freq_log <- log(stat$s1_freq)
+# distance
+stat$dist_log <- log(stat$dist_v2s)
+# s1_len
+stat$s1_len_log <- log(stat$s1_len)
+
+# centering and scaling continuous variables (covariates)
+# v_freq
+stat$freq_log_cent <- scale(stat$freq_log, scale=T, center=T)
+# s1_freq
+stat$s1_freq_log_cent <- scale(stat$s1_freq_log, scale=T, center=T)
+
+# s1_len
+stat$s1_len_log_cent <- scale(stat$s1_len_log, scale=T, center=T)
+
+# distance
+# calculate the absolute value of distance
+#stat$dist_v2s_abs <- abs(stat$dist_v2s)
+stat$dist_log_cent <- scale(stat$dist_log, scale=T, center=T)
+
+```
+
+
+```{r independant factors coding gpt}
+#gpt
+
+stat$s1_info_sum <- -stat$s1_log_proba_gpt_sum_win1
+stat$s1_info_sum_cent <- scale(stat$s1_info_sum, scale=T,center=T)
+
+#stat$s1_info_avg <- -stat$s1_log_proba_gpt_avg_win1
+#stat$s1_info_avg_cent <- scale(stat$s1_info_avg, scale=T,center=T)
+
+#stat$s1_info_1 <- -stat$s1_log_proba_gpt1_win1
+#stat$s1_info_1_cent <- scale(stat$s1_info_1, scale=T,center=T)
+
+#stat$s1_ratio_avg_cent <- scale(stat$s1_ratio_avg_win1, scale=T,center=T)
+
+#ranking
+#stat <- stat %>% mutate(ranking2 = as.factor(case_when(
+#  str_detect(ranking, "1")~"high",
+#  TRUE~"low"
+#)))
+
+#count(stat$ranking2)
+
+# ratio proba_w/proba_g
+#stat$s1_ratio_log <- log(stat$s1_ratio)
+#stat$s1_ratio_log_cent <- scale(stat$s1_ratio_log, scale=T, center=T)
+```
+
+
+```{r independant factors scaling}
+# contrast coding for categorical variables (factors)
+library(MASS)
+
+stat$polarity2 <- factor(stat$polarity2, levels=c("aff.", "neg. ne retention", "neg. ne omission"))
+contrasts(stat$polarity2) <- contr.sdif(3)
+
+stat$polarity_item2 <-factor(stat$polarity_item2, levels=c("affirmative", "pas", "other_negative_words"))
+contrasts(stat$polarity_item2) <- contr.sdif(3) 
+
+stat$s1_type2 <-factor(stat$s1_type2, levels=c("free choice", "degree quant.", "neg. quant.", "universal", "indefinite", "definite"))
+contrasts(stat$s1_type2) <- contr.sdif(6) 
+
+stat$s1_type3 <-factor(stat$s1_type3, levels=c("universal", "indefinite", "definite"))
+contrasts(stat$s1_type3) <- contr.sdif(3)
+
+stat$s1_type4 <-factor(stat$s1_type4, levels=c("universal", "quantified", "indefinite", "definite"))
+contrasts(stat$s1_type4) <- contr.sdif(4)
+
+stat$s1_animacy2 <-factor(stat$s1_animacy2, levels=c("inanimate", "animate"))
+contrasts(stat$s1_animacy2) <- contr.sdif(2)
+
+stat$clause2 <-factor(stat$clause2, levels=c("relative", "other subordinate", "main"))
+contrasts(stat$clause2) <- contr.sdif(3)
+
+stat$intervention2 <-factor(stat$intervention2, levels=c("clitics", "no_clitics"))
+contrasts(stat$intervention2) <- contr.sdif(2)
+
+#stat$ranking2 <- factor(stat$ranking2, levels=c("low","high"))
+#contrasts(stat$ranking2) <- contr.sdif(2)
+```
+
+
+# modeling
+```{r model all_sd}
+m.all_sd <- glmer(sd2 ~ polarity2 
+               + freq_log_cent
+               + dist_log_cent 
+               + s1_info_sum_cent
+               + s1_type3 
+               + clause2
+               + (1|v_lemma) + (1|speaker_name), 
+               data=stat, family=binomial, glmerControl(optimizer="bobyqa"))
+print(summary(m.all_sd),cor=F)
+
+tab_model(m.all_sd)
+```
+
+
+```{r model all_sd_wo_surprisal}
+m.all_sd_wo_surprisal <- glmer(sd2 ~ polarity2 
+               + freq_log_cent
+               + dist_log_cent 
+               + s1_type3 
+               + clause2
+               + (1|v_lemma) + (1|speaker_name), 
+               data=stat, family=binomial, glmerControl(optimizer="bobyqa"))
+print(summary(m.all_sd_wo_surprisal),cor=F)
+
+anova(m.all_sd, m.all_sd_wo_surprisal)
+```
+
+
+
+```{r distribution of occurrences of s1 lemma}
+#distribution of occurrences of s1 lemma
+tmp <- count(stat$s1_lemma)
+
+count(tmp$freq)
+
+hist(tmp$freq, breaks = 180, xlab='number of occs of s1 lemma', main = 'Distribution of occurrences of s1 lemma')
+
+# noun lemmas occuring less than (included) 5 times
+(661+174+79+44+26)/1071
+```
+
+
+## model evaluation
+```{r model accuracy}
+## calculating model accuracy ##
+# fitted/predicted values in logit scale
+stat$fitted.m.all_sd <- fitted(m.all_sd) #fitted means predicted by the model
+
+# predicted probability: coding as 1 any probability that is greater than 0.5
+stat$cor_pred <- as.numeric(predict(m.all_sd, type="response")>0.5)
+
+mean(stat$cor_pred==stat$sd2) #0.8808027 proportion correct
+
+
+# observed probability: coding 
+stat$cor_obs <- stat$sd2
+
+# table of correctness
+xtabs(~cor_obs + cor_pred, stat)
+```
+
+
+```{r check multilinearilty}
+library(car)
+vif(m.all_sd)
+```
+
+
+## overall distribution of factors
+
+```{r rate of sd}
+mean(data2$sd2) #[1] 0.7522916
+```
+
+
+```{r observations of factors}
+# to see distribution of observations across each variable
+library(dplyr)
+library(doBy)
+library(gmodels)
+
+# polairty
+summaryBy(sd2~polarity, data=stat,FUN=c(mean,var,length))
+summaryBy(sd2~polarity2, data=stat,FUN=c(mean,var,length))
+
+summaryBy(sd2~polarity_item2, data=stat,FUN=c(mean,length))
+summaryBy(sd2~polarity_item, data=data2,FUN=c(mean,length))
+
+# s1
+# subject type
+summaryBy(sd2~s1_type, data=stat,FUN=c(mean,length))
+summaryBy(sd2~s1_type2, data=stat,FUN=c(mean,length))
+summaryBy(sd2~s1_type3, data=stat,FUN=c(mean,length))
+summaryBy(sd2~s1_type4, data=stat,FUN=c(mean,length))
+
+# subject animacy
+summaryBy(sd2~s1_animacy, data=stat,FUN=c(mean,length))
+summaryBy(sd2~s1_animacy2, data=stat,FUN=c(mean,length))
+
+# clause type
+summaryBy(sd2~clause, data=stat,FUN=c(mean,length))
+summaryBy(sd2~clause2, data=stat,FUN=c(mean,length))
+
+# intervention clitics
+summaryBy(sd2~intervention2, data=stat,FUN=c(mean,length))
+
+# s1 proba ranking
+summaryBy(sd2~ranking, data=stat,FUN=c(mean,length))
+summaryBy(sd2~ranking2, data=stat,FUN=c(mean,length))
+
+```
+
+
+## Plots
+
+```{r plot random effects}
+library("glmmTMB")
+plot_model(m.all_sd,type="re")
+```
+
+
+### numeric variable
+```{r distance, echo=FALSE}
+# for numeric variable
+
+library(plyr)
+library(dplyr)
+library(ggplot2)
+
+#stat2 <- droplevels(subset(stat, distance<=20))
+stat2 <- stat %>% 
+  group_by(dist_v2s) %>% 
+  filter(n() >= 5)
+detach("package:plyr", unload = TRUE)
+
+stat2 <- stat2 %>% mutate(n=n())
+
+require(plyr)
+agg1 <- droplevels(ddply(stat2, 
+                         .(dist_v2s), summarize,
+                         dv = mean(sd2)))
+
+p <- ggplot(agg1, aes(x=dist_v2s, y=dv)) + geom_point(color="steelblue") + geom_smooth(method="lm",size=1.5,se=T,color="black") + 
+  ylab( "Proportion of left subject doubling" ) + 
+  xlab("Distance between s1 head and verb") +
+  ylim(-0.05,1.05) +
+  scale_color_binned() +
+  theme_bw()
+
+  theme(axis.title.y=element_text(size=20, angle=90),
+        axis.title.x=element_text(size=20, angle=0),
+        axis.text.x=element_text(size=20, color="black"),
+        #axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_text(size=20, color="black"),
+        legend.position = "none",
+        panel.grid.major=element_line(),
+        panel.grid.major.y=element_line(size=.1, color="gray"),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor=element_blank())
+
+p
+#ggsave("sd_left_dist_n4703.png", width=10, height=8, plot = p, dpi=1200)
+```
+
+
+```{r verb freq}
+# keep verbs in the figure if n(sd) >= 10
+library(ggrepel)
+
+stat3 <- stat %>%
+  group_by(v_lemma) %>%
+  filter(n()>=5)
+
+agg1 <- droplevels(ddply(stat3, 
+                         .(v_lemma,freq_log_cent), summarize,
+                         dv = mean(sd2)))
+
+options(ggrepel.max.overlaps = Inf)
+
+p <- ggplot(agg1, aes(x=freq_log_cent, y=dv)) + geom_jitter(size=2) + geom_smooth(method="lm",size=1.5,se=T) + 
+  ylab( "Proportion of subject doubling" ) + 
+  xlab("log-frequency (cent) of the verb") +
+  xlim(-2,1) +
+  ylim(-0.05,1.05) +
+  geom_point() +
+  geom_text_repel(aes(label = v_lemma, size=3)) +
+  theme_bw()
+  theme(axis.title.y=element_text(size=20, angle=90),
+        axis.title.x=element_text(size=20, angle=0),
+        axis.text.x=element_text(size=20, color="black"),
+        #axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_text(size=20, color="black"),
+        legend.position = "none",
+        panel.grid.major=element_line(),
+        panel.grid.major.y=element_line(size=.1, color="gray"),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor=element_blank())
+
+p  
+
+#ggsave("sd_left_v_freq_n5567_n5.png", width=12, height=8, plot = p, dpi=1200)
+```
+
+
+```{r s1_info gpt sum grouped by round}
+stat <- stat %>% mutate(info_grouped = as.numeric(round(s1_info_sum, 1)))
+
+agg1 <- droplevels(ddply(stat, 
+                         .(info_grouped), summarize,
+                         dv = mean(sd2)))
+
+p <- ggplot(agg1, aes(x=info_grouped, y=dv)) +
+  geom_smooth(method=NULL,size=1.5,se=T) + 
+  ylab( "Proportion des sujets redoublés" ) + 
+  xlab("Information du sujet (-logP(sujet|contexte), 1 décimal)") +
+  #xlim(-2,2) +
+  ylim(-0.05,1.05) +
+  geom_point(size=2) +
+  #geom_text_repel(aes(label = s1_lemma, size=3)) +
+  theme_bw()
+  theme(axis.title.y=element_text(size=20, angle=90),
+        axis.title.x=element_text(size=20, angle=0),
+        axis.text.x=element_text(size=20, color="black"),
+        #axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_text(size=20, color="black"),
+        legend.position = "none",
+        panel.grid.major=element_line(),
+        panel.grid.major.y=element_line(size=.1, color="gray"),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor=element_blank())
+
+p  
+#ggsave("sd_left_s1_info_sum_win1.png", plot = p, dpi=1200)
+```
+
+
+```{r s1 gpt sum grouped by equal size bins}
+library(dplyr)
+library(plyr)
+library(ggrepel)
+
+# Intervals with approximately equal numbers of observations
+stat <- stat %>% 
+  mutate(s1_info_sum_group = as.numeric(cut_number(s1_info_sum,
+                               n = 124,
+                               right = F)))
+
+# Check results
+count(stat$s1_info_sum_group)
+
+agg1 <- droplevels(ddply(stat, 
+                         .(s1_info_sum_group), summarize,
+                         info_group = mean(s1_info_sum),
+                         dv = mean(sd2)))
+                         #s1_nps = paste(s1_np, sep= ", ", collapse="")))
+
+agg1 <- agg1 %>% mutate(group_10 = cut_interval(info_group, length=5, right=F))
+count(agg1$group_10)
+
+
+p <- ggplot(agg1, aes(x=info_group, y=dv)) +
+  geom_smooth(method="gam",size=1.5,se=T) + 
+  ylab( "Proportion of subject doubling" ) + 
+  xlab("NP info sum (-logP(NP|context), bin=30)") +
+  #xlim(0,30) +
+  ylim(-0.05,1.05) +
+  geom_point(size=2) +
+  #geom_text_repel(aes(label = s1_nps, size=1)) +
+  theme_bw()
+  theme(axis.title.y=element_text(size=20, angle=90),
+        axis.title.x=element_text(size=20, angle=0),
+        axis.text.x=element_text(size=20, color="black"),
+        #axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_text(size=20, color="black"),
+        legend.position = "none",
+        panel.grid.major=element_line(),
+        panel.grid.major.y=element_line(size=.1, color="gray"),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor=element_blank())
+
+p
+#ggsave("sd_left_s1_info_sum_win1_bin30_n3723.png", plot = p, dpi=800)
+
+```
+
+
+```{r s1 gpt avg grouped by equal size bins}
+stat <- stat %>% 
+  mutate(s1_info_grouped_avg = as.numeric(cut_number(s1_info_avg,
+                               n = 137,
+                               right = F)))
+
+agg1 <- droplevels(ddply(stat, 
+                         .(s1_info_grouped_avg), summarize,
+                         info_group_avg = mean(s1_info_avg),
+                         dv = mean(sd2)))
+
+p <- ggplot(agg1, aes(x=info_group_avg, y=dv)) +
+  geom_smooth(method=NULL,size=1.5,se=T) + 
+  ylab( "Proportion of subject doubling" ) + 
+  xlab("NP info avg by -logP(NP|context)/len(NP), bin=30") +
+  #xlim(-2,2) +
+  ylim(-0.05,1.05) +
+  geom_point(size=2) +
+  #geom_text_repel(aes(label = s1_lemma, size=3)) +
+  theme_bw()
+  theme(axis.title.y=element_text(size=20, angle=90),
+        axis.title.x=element_text(size=20, angle=0),
+        axis.text.x=element_text(size=20, color="black"),
+        #axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_text(size=20, color="black"),
+        legend.position = "none",
+        panel.grid.major=element_line(),
+        panel.grid.major.y=element_line(size=.1, color="gray"),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor=element_blank())
+p
+```
+
+
+### categorical factors
+```{r subject type}
+library(plyr)
+
+agg1 <- droplevels(ddply(stat, 
+                         .(speaker_name,s1_type3), summarize,
+                         dv = mean(sd2)))
+
+GM <- mean(agg1$dv) # grand mean 
+agg1 <- ddply(agg1, .(speaker_name), transform, dv.w = dv-mean(dv)+GM) # transformation of dv using GM
+nl <- nlevels(agg1$s1_type3) # number of levels of within-speaker variables
+mf <- sqrt( nl/(nl-1) ) # Morey factor (Morey, 2008) to calculate corrected confidence intervals
+
+agg2 <- ddply(agg1, .(s1_type3), summarize, 
+              N = length(dv), # number of observations
+              M = mean(dv), # mean 
+              CI = sd(dv.w)/sqrt(length(dv.w))*mf*qt(.975, length(dv.w)-1)) # 95% confidence intervals
+              #SD = sd(dv))
+
+library(ggplot2)
+ggplot(data=agg2, aes(x=s1_type3, y=M, color=s1_type3)) + 
+  geom_point(size=3) + theme_bw() + 
+  geom_errorbar(aes(max=M+CI, min=M-CI),size=1,width=.1) + 
+  ylab("Proportion of subject doubling") + 
+  xlab("S1 subject type") + 
+  ylim(-0.05,1.05) +
+  scale_color_manual(values=c("#999999", "#E69F00", "#56B4E9", "#009E73", "#669999", "#00CCCC"),name=" ") +
+  theme(axis.title.y=element_text(size=20, angle=90),
+        axis.title.x=element_text(size=20, angle=0),
+        axis.text.x=element_text(size=20, color="black"),
+        #axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_text(size=20, color="black"),
+        legend.position = "none",
+        panel.grid.major=element_line(),
+        panel.grid.major.y=element_line(size=.1, color="gray"),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor=element_blank())
+```
+
+
+```{r clause type}
+library(plyr)
+
+agg1 <- droplevels(ddply(stat, 
+                         .(speaker_name,clause2), summarize,
+                         dv = mean(sd2)))
+
+GM <- mean(agg1$dv) # grand mean 
+agg1 <- ddply(agg1, .(speaker_name), transform, dv.w = dv-mean(dv)+GM) # transformation of dv using GM
+nl <- nlevels(agg1$clause2) # number of levels of within-speaker variables
+mf <- sqrt( nl/(nl-1) ) # Morey factor (Morey, 2008) to calculate corrected confidence intervals
+
+agg2 <- ddply(agg1, .(clause2), summarize, 
+              N = length(dv), # number of observations
+              M = mean(dv), # mean 
+              CI = sd(dv.w)/sqrt(length(dv.w))*mf*qt(.975, length(dv.w)-1)) # 95% confidence intervals
+              #SD = sd(dv))
+
+library(ggplot2)
+ggplot(data=agg2, aes(x=clause2, y=M, color=clause2)) + 
+  geom_point(size=3) + theme_bw() + 
+  geom_errorbar(aes(max=M+CI, min=M-CI),size=1,width=.1) + 
+  #geom_errorbar(aes(max=M+SD, min=M-SD),size=1,width=.1) +
+  ylab("Proportion of subject doubling") + 
+  xlab("clause type") + 
+  ylim(-0.05,1.05) +
+  scale_color_manual(values=c("#999999", "#E69F00", "#56B4E9", "#009E73", "#669999", "#00CCCC"),name=" ") +
+
+  theme(axis.title.y=element_text(size=20, angle=90),
+        axis.title.x=element_text(size=20, angle=0),
+        axis.text.x=element_text(size=20, color="black"),
+        #axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_text(size=20, color="black"),
+        legend.position = "none",
+        panel.grid.major=element_line(),
+        panel.grid.major.y=element_line(size=.1, color="gray"),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor=element_blank())
+```
+
+
+```{r polarity2 (ne)}
+
+library(plyr)
+
+agg1 <- droplevels(ddply(stat, 
+                         .(speaker_name,polarity2), summarize,
+                         dv = mean(sd2)))
+
+GM <- mean(agg1$dv) # grand mean 
+agg1 <- ddply(agg1, .(polarity2), transform, dv.w = dv-mean(dv)+GM) # transformation of dv using GM
+nl <- nlevels(agg1$polarity2) # number of levels of within-speaker variables
+mf <- sqrt( nl/(nl-1) ) # Morey factor (Morey, 2008) to calculate corrected confidence intervals
+
+agg2 <- ddply(agg1, .(polarity2), summarize, 
+              N = length(dv), # number of observations
+              M = mean(dv), # mean 
+              CI = sd(dv.w)/sqrt(length(dv.w))*mf*qt(.975, length(dv.w)-1)) # 95% confidence intervals
+              #SD = sd(dv))
+
+library(ggplot2)
+ggplot(data=agg2, aes(x=polarity2, y=M, color=polarity2)) + 
+  geom_point(size=3) + theme_bw() + 
+  geom_errorbar(aes(max=M+CI, min=M-CI),size=1,width=.1) + 
+  #geom_errorbar(aes(max=M+SD, min=M-SD),size=1,width=.1) +
+  ylab("Proportion of subject doubling") + 
+  xlab("effect of 'ne'") + 
+  ylim(-0.05,1.05) +
+  scale_color_manual(values=c("#999999", "#E69F00", "#56B4E9", "#009E73", "#669999", "#00CCCC"),name=" ") +
+
+  theme(axis.title.y=element_text(size=20, angle=90),
+        axis.title.x=element_text(size=20, angle=0),
+        axis.text.x=element_text(size=20, color="black"),
+        #axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_text(size=20, color="black"),
+        legend.position = "none",
+        panel.grid.major=element_line(),
+        panel.grid.major.y=element_line(size=.1, color="gray"),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor=element_blank())
+```
+
+```{r intervention clitics}
+
+library(plyr)
+
+agg1 <- droplevels(ddply(stat, 
+                         .(speaker_name,intervention2), summarize,
+                         dv = mean(sd2)))
+
+GM <- mean(agg1$dv) # grand mean 
+agg1 <- ddply(agg1, .(intervention2), transform, dv.w = dv-mean(dv)+GM) # transformation of dv using GM
+nl <- nlevels(agg1$intervention2) # number of levels of within-speaker variables
+mf <- sqrt( nl/(nl-1) ) # Morey factor (Morey, 2008) to calculate corrected confidence intervals
+
+agg2 <- ddply(agg1, .(intervention2), summarize, 
+              N = length(dv), # number of observations
+              M = mean(dv), # mean 
+              CI = sd(dv.w)/sqrt(length(dv.w))*mf*qt(.975, length(dv.w)-1)) # 95% confidence intervals
+              #SD = sd(dv))
+
+library(ggplot2)
+ggplot(data=agg2, aes(x=intervention2, y=M, color=intervention2)) + 
+  geom_point(size=3) + theme_bw() + 
+  geom_errorbar(aes(max=M+CI, min=M-CI),size=1,width=.1) + 
+  #geom_errorbar(aes(max=M+SD, min=M-SD),size=1,width=.1) +
+  ylab("Proportion of subject doubling") + 
+  xlab("effect of clitics intervention (excluding ne retention cases)") + 
+  ylim(-0.05,1.05) +
+  scale_color_manual(values=c("#999999", "#E69F00", "#56B4E9", "#009E73", "#669999", "#00CCCC"),name=" ") +
+
+  theme(axis.title.y=element_text(size=20, angle=90),
+        axis.title.x=element_text(size=20, angle=0),
+        axis.text.x=element_text(size=20, color="black"),
+        #axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_text(size=20, color="black"),
+        legend.position = "none",
+        panel.grid.major=element_line(),
+        panel.grid.major.y=element_line(size=.1, color="gray"),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor=element_blank())
+```
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
