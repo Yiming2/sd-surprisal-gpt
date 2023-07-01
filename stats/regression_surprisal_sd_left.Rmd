@@ -20,7 +20,7 @@ rm(list=ls())
 ## load data
 
 ```{r load data}
-data <- read.csv("test_constituent_no_dis_spk_n4671_win1.csv")
+data <- read.csv("test_constituent_no_dis_spk_n4671_fine_tuned_win1.csv")
 
 ```
 
@@ -69,7 +69,7 @@ data2 <- droplevels(subset(data, polarity !="ne que" & s1_freq!="" & dist_v2s!='
 data2 <- droplevels(subset(data2, sd %in% c("no_sd", "no_sd(topic)", "sd", "sd(topic)", "sd,od"))) #5352
 
 # only keep left sd
-data2 <- droplevels(subset(data2, position %in% c("left","na"))) #3727
+data2 <- droplevels(subset(data2, position %in% c("left","na"))) #3733
 ```
 
 
@@ -392,7 +392,6 @@ p <- ggplot(agg1, aes(x=dist_v2s, y=dv)) + geom_point(color="steelblue") + geom_
         panel.grid.minor=element_blank())
 
 p
-#ggsave("sd_left_dist_n4703.png", width=10, height=8, plot = p, dpi=1200)
 ```
 
 
@@ -431,8 +430,6 @@ p <- ggplot(agg1, aes(x=freq_log_cent, y=dv)) + geom_jitter(size=2) + geom_smoot
         panel.grid.minor=element_blank())
 
 p  
-
-#ggsave("sd_left_v_freq_n5567_n5.png", width=12, height=8, plot = p, dpi=1200)
 ```
 
 
@@ -515,7 +512,7 @@ p <- ggplot(agg1, aes(x=info_group, y=dv)) +
         panel.grid.minor=element_blank())
 
 p
-#ggsave("sd_left_s1_info_sum_win1_bin30_n3723.png", plot = p, dpi=800)
+#ggsave("sd_left_s1_info_sum_win1_bin30_n3733.png", plot = p, dpi=800)
 
 ```
 
